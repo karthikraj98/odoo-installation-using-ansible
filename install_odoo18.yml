@@ -1,0 +1,151 @@
+---
+- name: Install Odoo 18 on multiple servers
+  hosts: web
+  become: yes
+
+  vars:
+    odoo_user: odoo
+    odoo_password: admin
+    odoo_port: 1818
+    odoo_install_dir: /opt/odoo
+    odoo_venv_dir: /opt/odoo-venv
+    odoo_config: /etc/odoo.conf
+    addons_path: /opt/odoo/addons
+    odoo_version: 18.0   # Add this line if not already defined
+
+  tasks:
+
+    - name: Update and install required packages
+      apt:
+        update_cache: yes
+        name:
+          - git
+          - python3
+          - python3-pip
+          - python3-venv
+          - libpq-dev
+          - build-essential
+          - wget
+          - node-less
+          - libjpeg-dev
+          - libxml2-dev
+          - libxslt1-dev
+          - zlib1g-dev
+          - libsasl2-dev
+          - libldap2-dev
+          - libffi-dev
+          - libssl-dev
+          - wkhtmltopdf
+          - postgresql
+        state: present
+
+    - name: Create Odoo system user
+      user:
+        name: "{{ odoo_user }}"
+        shell: /bin/bash
+        system: yes
+        create_home: yes
+
+    - name: Ensure PostgreSQL role exists for Odoo
+      become: yes
+      shell: |
+        sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='{{ odoo_user }}'" | grep -q 1 || sudo -u postgres createuser -s {{ odoo_user }}
+      args:
+        executable: /bin/bash
+
+    - name: Secure PostgreSQL (disable remote connections)
+      lineinfile:
+        path: /etc/postgresql/16/main/postgresql.conf
+        regexp: '^#?listen_addresses\s*='
+        line: "listen_addresses = 'localhost'"
+      notify: Restart PostgreSQL
+
+    - name: Clone Odoo 18 from GitHub with buffer fix
+      become: yes
+      shell: |
+        git config --global http.postBuffer 524288000
+        git clone --depth 1 --branch {{ odoo_version }} https://github.com/odoo/odoo.git {{ odoo_install_dir }}
+      args:
+        executable: /bin/bash
+        creates: "{{ odoo_install_dir }}"
+
+    - name: Create custom addons directory
+      file:
+        path: "{{ addons_path }}"
+        state: directory
+        owner: "{{ odoo_user }}"
+        group: "{{ odoo_user }}"
+
+    - name: Create virtual environment for Odoo
+      command: python3 -m venv "{{ odoo_venv_dir }}"
+      args:
+        creates: "{{ odoo_venv_dir }}/bin/activate"
+
+    - name: Install Python dependencies using pip
+      pip:
+        requirements: "{{ odoo_install_dir }}/requirements.txt"
+        virtualenv: "{{ odoo_venv_dir }}"
+        virtualenv_python: python3
+
+    - name: Create Odoo configuration file
+      copy:
+        dest: "{{ odoo_config }}"
+        content: |
+          [options]
+          addons_path = {{ addons_path }}
+          data_dir = /var/lib/odoo
+          db_host = False
+          db_port = False
+          db_user = {{ odoo_user }}
+          db_password = {{ odoo_password }}
+          admin_passwd = admin
+          xmlrpc_port = {{ odoo_port }}
+          xmlrpc_interface = 0.0.0.0
+        owner: "{{ odoo_user }}"
+        group: "{{ odoo_user }}"
+        mode: '0644'
+
+    - name: Create session directory
+      file:
+        path: /var/lib/odoo
+        state: directory
+        owner: "{{ odoo_user }}"
+        group: "{{ odoo_user }}"
+        mode: '0755'
+
+    - name: Create systemd service for Odoo
+      copy:
+        dest: /etc/systemd/system/odoo.service
+        content: |
+          [Unit]
+          Description=Odoo
+          Requires=postgresql.service
+          After=network.target postgresql.service
+
+          [Service]
+          Type=simple
+          SyslogIdentifier=odoo
+          PermissionsStartOnly=true
+          User={{ odoo_user }}
+          Group={{ odoo_user }}
+          ExecStart={{ odoo_venv_dir }}/bin/python3 {{ odoo_install_dir }}/odoo-bin -c {{ odoo_config }}
+          StandardOutput=journal+console
+
+          [Install]
+          WantedBy=multi-user.target
+        mode: '0644'
+
+    - name: Reload systemd
+      command: systemctl daemon-reexec
+
+    - name: Enable and start Odoo service
+      systemd:
+        name: odoo
+        enabled: yes
+        state: restarted
+
+  handlers:
+    - name: Restart PostgreSQL
+      systemd:
+        name: postgresql
+        state: restarted
