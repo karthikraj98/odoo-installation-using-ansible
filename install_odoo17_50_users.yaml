@@ -1,10 +1,9 @@
 ---
-- name: Install Odoo 17 on multiple servers
-  hosts: web
+- name: Install Odoo 17 on multiple servers with unique users
+  hosts: all
   become: yes
 
   vars:
-    odoo_user: odoo
     odoo_password: admin
     odoo_port: 1717
     odoo_service: odoo17
@@ -17,6 +16,9 @@
     odoo_log_file: /var/log/odoo/odoo17.log
 
   tasks:
+    - name: Set Odoo user from inventory
+      set_fact:
+        odoo_user: "{{ hostvars[inventory_hostname]['user_name'] | trim }}"
 
     - name: Update and install required packages
       apt:
@@ -50,7 +52,7 @@
         system: yes
         create_home: yes
 
-    - name: Ensure PostgreSQL role exists for Odoo
+    - name: Ensure PostgreSQL role exists for Odoo user
       shell: |
         sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='{{ odoo_user }}'" | grep -q 1 || sudo -u postgres createuser -s {{ odoo_user }}
       args:
@@ -63,13 +65,12 @@
         line: "listen_addresses = 'localhost'"
       notify: Restart PostgreSQL
 
-    - name: Clone Odoo 17 from GitHub with buffer fix
-      shell: |
-        git config --global http.postBuffer 524288000
-        git clone --depth 1 --branch {{ odoo_version }} https://github.com/odoo/odoo.git {{ odoo_install_dir }}
-      args:
-        executable: /bin/bash
-        creates: "{{ odoo_install_dir }}"
+    - name: Clone Odoo 17 from GitHub
+      git:
+        repo: "https://github.com/odoo/odoo.git"
+        dest: "{{ odoo_install_dir }}"
+        version: "{{ odoo_version }}"
+        depth: 1
 
     - name: Create custom addons directory
       file:
