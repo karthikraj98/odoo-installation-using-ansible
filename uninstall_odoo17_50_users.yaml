@@ -1,0 +1,152 @@
+---
+- name: Uninstall Odoo 17 and related stack
+  hosts: all
+  become: yes
+
+  vars:
+    odoo_service: odoo17
+    odoo_install_dir: /opt/odoo
+    odoo_venv_dir: /opt/odoo-venv
+    odoo_config: /etc/odoo17.conf
+    odoo_log_dir: /var/log/odoo
+    addons_path: /opt/odoo/addons
+    odoo_user: "{{ hostvars[inventory_hostname]['user_name'] | trim }}"
+
+  tasks:
+    - name: Stop Odoo service if running
+      systemd:
+        name: "{{ odoo_service }}"
+        state: stopped
+      ignore_errors: yes
+
+    - name: Disable Odoo service
+      systemd:
+        name: "{{ odoo_service }}"
+        enabled: no
+      ignore_errors: yes
+
+    - name: Remove Odoo systemd service file
+      file:
+        path: "/etc/systemd/system/{{ odoo_service }}.service"
+        state: absent
+
+    - name: Reload systemd after removing service
+      command: systemctl daemon-reexec
+
+    - name: Remove Odoo installation directory
+      file:
+        path: "{{ odoo_install_dir }}"
+        state: absent
+
+    - name: Remove Odoo virtual environment
+      file:
+        path: "{{ odoo_venv_dir }}"
+        state: absent
+
+    - name: Remove Odoo log directory
+      file:
+        path: "{{ odoo_log_dir }}"
+        state: absent
+
+    - name: Remove addons directory
+      file:
+        path: "{{ addons_path }}"
+        state: absent
+
+    - name: Remove Odoo configuration file
+      file:
+        path: "{{ odoo_config }}"
+        state: absent
+
+    - name: Remove Odoo session/data directory
+      file:
+        path: /var/lib/odoo
+        state: absent
+
+    - name: Drop PostgreSQL role for Odoo user
+      shell: |
+        sudo -u postgres psql -tAc "DROP ROLE IF EXISTS {{ odoo_user }}"
+      args:
+        executable: /bin/bash
+      ignore_errors: yes
+
+    - name: Remove Odoo system user
+      user:
+        name: "{{ odoo_user }}"
+        state: absent
+        remove: yes
+
+    # --- PostgreSQL Removal ---
+    - name: Stop PostgreSQL service
+      systemd:
+        name: postgresql
+        state: stopped
+      ignore_errors: yes
+
+    - name: Remove PostgreSQL packages
+      apt:
+        name: "{{ item }}"
+        state: absent
+        purge: yes
+      loop:
+        - postgresql
+        - postgresql-client
+        - postgresql-contrib
+      ignore_errors: yes
+
+    - name: Remove PostgreSQL data directory
+      file:
+        path: /var/lib/postgresql
+        state: absent
+
+    # --- Nginx Removal ---
+    - name: Stop Nginx service
+      systemd:
+        name: nginx
+        state: stopped
+      ignore_errors: yes
+
+    - name: Remove Nginx
+      apt:
+        name: nginx
+        state: absent
+        purge: yes
+      ignore_errors: yes
+
+    - name: Remove Nginx config directories
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/nginx
+        - /var/log/nginx
+        - /var/www/html
+
+    # --- Python & Dependencies Removal ---
+    - name: Remove Python3 and pip
+      apt:
+        name:
+          - python3
+          - python3-pip
+          - python3-venv
+        state: absent
+        purge: yes
+      ignore_errors: yes
+
+    - name: Remove any cached Python packages
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /usr/local/lib/python3.*
+        - /root/.cache/pip
+
+    # --- Clean Up ---
+    - name: Autoremove unused packages
+      apt:
+        autoremove: yes
+        purge: yes
+
+    - name: Clean apt cache
+      apt:
+        autoclean: yes
